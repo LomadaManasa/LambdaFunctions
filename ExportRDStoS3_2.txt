@@ -1,0 +1,57 @@
+import boto3
+import time
+
+def create_snapshot_id(db_instance_identifier):
+    current_time = time.strftime("%Y-%m-%d-%H-%M-%S", time.gmtime())
+    return f'{db_instance_identifier}-snapshot-{current_time}'
+
+def wait_for_snapshot(rds_client, snapshot_id):
+    max_retries = 10
+    retries = 0
+    while retries < max_retries:
+        response = rds_client.describe_db_snapshots(DBSnapshotIdentifier=snapshot_id)
+        snapshot_status = response['DBSnapshots'][0]['Status']
+        
+        if snapshot_status == 'available':
+            return
+        else:
+            retries += 1
+            time.sleep(30)  # Wait for 30 seconds before checking again
+    
+    raise Exception(f"Snapshot {snapshot_id} did not become available in time")
+
+def lambda_handler(event, context):
+    rds_client = boto3.client('rds')
+    s3_client = boto3.client('s3')
+    db_instance_identifier = 'database-1'
+    target_bucket = 'test-bucket-to-export-rds'
+
+    instances = rds_client.describe_db_instances()['DBInstances']
+
+    for instance in instances:
+        instance_identifier = instance['DBInstanceIdentifier']
+        snapshot_id = create_snapshot_id(db_instance_identifier) 
+        
+        rds_client.create_db_snapshot(
+            DBSnapshotIdentifier=snapshot_id,
+            DBInstanceIdentifier=instance_identifier
+        )
+        
+        wait_for_snapshot(rds_client, snapshot_id)
+        
+        snapshot_response = rds_client.describe_db_snapshots(DBSnapshotIdentifier=snapshot_id)
+        snapshot_url = snapshot_response['DBSnapshots'][0]['DBSnapshotIdentifier']
+        
+        s3_key = f'rds-snapshots/{snapshot_id}.sql'
+        s3_client.put_object(
+            Bucket=target_bucket,
+            Key=s3_key,
+            Body=snapshot_url.encode('utf-8')
+        )
+        
+        print(f'Snapshot {snapshot_id} exported to S3.')
+
+    return {
+        'statusCode': 200,
+        'body': 'Snapshots exported successfully'
+    }
