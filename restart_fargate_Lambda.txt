@@ -1,0 +1,40 @@
+import boto3
+
+def lambda_handler(event, context):
+    # TODO implement
+    ecs_client = boto3.client('ecs')
+    cluster_name = 'visionwheel-prod'
+    service_name = 'stage-visionwheel-shop'
+    try:
+        response = ecs_client.update_service(
+            cluster = cluster_name,
+            service = service_name,
+            forceNewDeployment = True
+            )
+        return {
+        'statusCode': 200,
+        'body': 'Fargate service restart initiated successfully.'
+        }
+    except Exception as e:
+        return {
+            'statusCode' : 500,
+            'body' : 'Error restarting Fargate service ' + str(e)
+        }
+
+
+
+
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "AllowUpdateService",
+            "Effect": "Allow",
+            "Action": [
+                "ecs:UpdateService",
+                "ecs:DescribeServices"
+            ],
+            "Resource": "arn:aws:ecs:us-east-1:585665768755:service/visionwheel-prod/stage-visionwheel-shop"
+        }
+    ]
+}
