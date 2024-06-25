@@ -1,0 +1,138 @@
+---------------CI PIPELINE---------------------
+
+pipeline
+{
+    agent any
+    
+    stages
+    {
+         stage('git clone')
+        {
+            steps{
+               git branch:'main', credentialsId: 'ca821685-865d-4d97-8eb1-9f074baf6bc6', 
+               url: 'git@gitlab.ggktech.com:capstone_2022/recruitmentcalendar/cap_rec_cal.git'
+            }
+        }
+       
+        stage('Build Maven')
+        {
+            steps{
+                script{
+                    env.GIT_COMMIT_MAIL=sh (script: 'git --no-pager show -s --format=\'%ae\'',returnStdout: true).trim()
+                    echo "$env.GIT_COMMIT_MAIL"
+                }
+
+                dir('Backend') {
+                   sh'mvn clean install'
+                }
+            }
+        }
+        stage('Build Docker image')
+        {
+            steps{
+                dir('Backend')
+                {
+                withCredentials([string(credentialsId: 'RecruitmentCalendar/Backend', variable: 'Recruitment_Backend')]) {
+                    sh 'sudo docker build -t ${Recruitment_Backend}:recruitmentcalendarbackend${BUILD_NUMBER} -f Dockerfile .'
+                    }
+                }
+            }
+        }
+        stage('Push docker image')
+        {
+            steps{
+                withCredentials([string(credentialsId: '50f86927-2b55-4739-abfd-17e68cdfb4f2', variable: 'DockerUsername'), string(credentialsId: 'DockerPassword', variable: 'DockerPassword'),string(credentialsId: 'RecruitmentCalendar/Backend', variable: 'Recruitment_Backend')]) {
+                script{
+                        sh 'sudo docker login -u ${DockerUsername} -p ${DockerPassword}'
+                        sh 'sudo docker push ${Recruitment_Backend}:recruitmentcalendarbackend${BUILD_NUMBER} '
+                        
+                    }
+                    sh 'sudo docker rmi ${Recruitment_Backend}:recruitmentcalendarbackend${BUILD_NUMBER}'
+                }
+            }
+        }
+        stage('deploy')
+        {
+            steps{
+                script
+                {
+                    emailext mimeType: 'text/html',
+                    subject: "APPROVAL Requried[JENKINS] ${currentBuild.fullDisplayName}",
+                    to: "valluri.shreyasi@acsicorp.com, manasa.lomada@acsicorp.com, praharsha.bejju@acsicorp.com, naveen.bavanlapally@acsicorp.com, bhavani.budige@acsicorp.com",
+                    body: "Please go to console output of ${env.BUILD_URL}input to continue to Deploy?";
+                    //body:'''<a href=”${BUILD_URL}input”>click to approve</a>'''
+            def userInput = input(message: 'CI is Successful, Do you want to build CD?', ok: 'proceed')
+                
+            def Build_NUM=env.BUILD_NUMBER
+            echo "$Build_NUM"
+            build job:'JavaDeployment', parameters:[
+                string(name:"buildno",value:"$Build_NUM")
+            ]
+            }
+            }
+        }
+    }
+    post {
+	    success {
+	  echo 'posting success to GitLab'
+          updateGitlabCommitStatus(name: 'java-build', state: 'success')
+  	    }
+	    failure {
+	  echo 'postinng failure to GitLab'
+          updateGitlabCommitStatus(name: 'java-build', state: 'failed')
+  	    }
+        always{
+            mail to:"$env.GIT_COMMIT_MAIL, valluri.shreyasi@acsicorp.com, manasa.lomada@acsicorp.com, praharsha.bejju@acsicorp.com, naveen.bavanlapally@acsicorp.com, bhavani.budige@acsicorp.com",
+            subject: "Pipeline_name: ${currentBuild.fullDisplayName}",
+            body: "Check console output at. ${env.BUILD_URL} to view the results and Build status is ${currentBuild.currentResult}"
+        }
+
+    }
+}
+
+------------- ----- CD PIPELINE ---------------------
+
+pipeline
+{
+    agent any
+    stages{
+        stage('SSH transfer') {
+            steps{
+            withCredentials([string(credentialsId: '50f86927-2b55-4739-abfd-17e68cdfb4f2', variable: 'DockerUsername'), string(credentialsId: 'DockerPassword', variable: 'DockerPassword'),string(credentialsId: 'RecruitmentCalendar/Backend', variable: 'Recruitment_Backend')]) {
+             script {
+                    sshPublisher(
+                        continueOnError: false, failOnError: true,
+                        publishers: [
+                            sshPublisherDesc(
+                                configName:"APP_Server",
+                                verbose: true,
+                                transfers: [
+                                   sshTransfer(
+                                      execCommand:"docker stop JavaContainer",
+                                    ),
+                                    sshTransfer(
+                                      execCommand:"docker rm -f JavaContainer",
+                                    ),
+                                    sshTransfer(
+                                       execCommand:"docker rmi \$(docker images 'manasalomada1712/java1:recruitmentcalendar*'|awk '{print \$3}'|tail -n +2)",
+                                    ),
+                                    sshTransfer(
+                                        execCommand: "docker login -u ${DockerUsername} -p ${DockerPassword}",
+                                    ),
+                                    sshTransfer(
+                                        execCommand:"docker pull ${Recruitment_Backend}:recruitmentcalendarbackend${env.buildno}",
+                                    ),
+                                    sshTransfer(
+                                        execCommand:"docker run -d --restart always -p 8089:8080  --name JavaContainer ${Recruitment_Backend}:recruitmentcalendarbackend${env.buildno}"
+                                    )
+                                ]
+                            )
+                        ]
+                    )
+                }
+            }
+            }
+        }
+    }
+}
+
