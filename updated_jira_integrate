@@ -1,0 +1,196 @@
+`import boto3
+import requests
+import json
+import variables
+import base64
+#from jira import JIRA
+
+from datetime import datetime, timedelta
+
+def lambda_handler(event, context):
+    print(event)
+    
+    sns_message = json.loads(event['Records'][0]['Sns']['Message'])
+    print(sns_message)
+    
+    # Extract information from the CloudWatch alarm event
+    alarm_name = sns_message['AlarmName']
+    alarm_description = sns_message['AlarmDescription']
+    
+    # Calculate the due date (current date + 24 hours)
+    current_date = datetime.utcnow()
+    due_date = current_date + timedelta(hours=24)
+    
+    # Format the due date in the required format (YYYY-MM-DDTHH:MM:SS.SSSZ)
+    due_date_formatted = due_date.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+    
+    # Extract metric type from alarm name or description
+    metric_type = identify_metric_type(alarm_name, alarm_description)
+  
+    # Create Jira issue payload with dynamic labele
+    if variables.ProjectType=="Scrum":
+        jira_issue_data = {
+        "fields": {
+            "project": {
+                "key": "SAMPLE"
+            },
+            "summary": f"{alarm_name}",
+            "description": {
+                "content": [
+                    {
+                        "content": [
+                            {
+                                "text": f"{alarm_description}.",
+                                "type": "text"
+                            }
+                        ],
+                        "type": "paragraph"
+                    }
+                ],
+                "type": "doc",
+                "version": 1
+            },
+            "issuetype": {
+                "name": "Task"
+            },
+            "assignee": {
+                "accountId":"712020:8dfe653a-b904-4127-8684-ed9933f2a23f"
+            },
+            "reporter":{
+                "accountId":"712020:8dfe653a-b904-4127-8684-ed9933f2a23f"
+            },
+            "labels": [metric_type],  # Assign dynamic label based on metric type
+            "customfield_10016":1,
+        }
+    }
+    if variables.ProjectType=="ServiceProject":
+        jira_issue_data = {
+        "fields": {
+            "project": {
+                "key": "TEST"
+            },
+            "summary": f"{alarm_name}",
+            "description": {
+                "content": [
+                    {
+                        "content": [
+                            {
+                                "text": f"{alarm_description}.",
+                                "type": "text"
+                            }
+                        ],
+                        "type": "paragraph"
+                    }
+                ],
+                "type": "doc",
+                "version": 1
+            },
+            "issuetype": {
+                "name": "Task"
+            },
+            "labels": [metric_type],  # Assign dynamic label based on metric type
+            "duedate" : due_date_formatted,
+	        "priority": {
+		        "name" : "Medium"
+		    },
+		    "customfield_10045": {
+		        "name":"C-Team"
+		    },
+        }
+    }
+        
+    
+    # Make a POST request to create the Jira issue
+    jira_url=f"{variables.jira_url}/rest/api/3/issue/"
+    jira_auth = (variables.jira_usermailId, variables.jira_ApiToken)
+    response = requests.post(jira_url,` json=jira_issue_data, auth=jira_auth)
+    
+    if response.status_code == 201:
+        print("Jira issue created successfully")
+        issue_key = response.json()["key"]
+        print(issue_key)
+        send_email(alarm_name,alarm_description,issue_key)
+        Link_Issues()
+
+        # Add the issue to the current sprint
+        #add_to_current_sprint(issue_key)
+    else:
+        print("Failed to create Jira issue:", response.text)
+
+def identify_metric_type(alarm_name, alarm_description):
+    # Implement logic to identify metric type from alarm name or description
+    if 'cpu' in alarm_name.lower() or 'cpu' in alarm_description.lower():
+        return 'cpu'
+    elif 'memory' in alarm_name.lower() or 'memory' in alarm_description.lower():
+        return 'memory'
+    elif 'disk' in alarm_name.lower() or 'disk' in alarm_description.lower():
+        return 'disk'
+    else:
+        return 'unknown'  # Default label if metric type cannot be determined
+
+def add_to_current_sprint(issue_key):
+    
+    board_id=variables.board_id
+    # Retrieve the current active sprint
+    sprint_endpoint = f"{variables.jira_url}/rest/agile/1.0/board/{board_id}/sprint?state=active"
+ 
+    jira_auth = (variables.jira_usermailId, variables.jira_ApiToken)
+    response = requests.get(sprint_endpoint,auth=jira_auth)
+    
+    if response.status_code == 200:
+        sprint_data = response.json()
+        
+        if sprint_data['values']:
+            current_sprint_id = sprint_data['values'][0]['id']
+            
+            # Add the issue to the current sprint
+            add_issue_to_sprint_endpoint = f"{variables.jira_url}/rest/agile/1.0/sprint/{current_sprint_id}/issue"
+            payload = {
+                "issues": [issue_key]
+            }
+            print(payload)
+            response = requests.post(add_issue_to_sprint_endpoint, json=payload, auth=jira_auth)
+            
+            if response.status_code == 204:
+                print("Issue added to the current sprint successfully")
+            else:
+                print("Failed to add issue to the current sprint:", response.text)
+        else:
+            print("No active sprint found")
+    else:
+        print("Failed to retrieve active sprint:", response.text)
+
+def send_email(alarm_name,alarm_description,issue_key):
+    client = boto3.client('sns')
+    message = f"New Jira ticket has been created with the following details : \n Jira Ticket URL : {variables.jira_url}/jira/servicedesk/projects/{variables.ProjectKey}/queues/custom/1/{issue_key} \n Jira Ticket Number: {issue_key}\n Jira Ticket Summary: {alarm_name}, \n Jira Ticket Description :{alarm_description}"
+    response = client.publish(TopicArn='arn:aws:sns:us-east-1:612572392212:Sample',Message=message,)
+    print("Message published")
+    return(response)
+    
+def Link_Issues():
+
+    source_issue_key = "TEST-41"
+    target_issue_key = "TEST-40"
+
+    # Connect to Jira
+    #jira_url=f"{variables.jira_url}/rest/api/3/issue/"
+    link_url = f"https://your-domain.atlassian.net/rest/api/3/issueLinkType"
+
+    jira_auth = (variables.jira_usermailId, variables.jira_ApiToken)
+
+
+    # Authentication header
+    # Link data (specifying "is sub-task" inward issue type)
+    link_data = {
+        "type": {"inwardIssue": "relates to"},
+        "outwardIssue": {"key": source_issue_key}
+    }
+
+
+    try:
+        response = requests.post(link_url,json=link_data,auth=jira_auth)
+        print(f"Successfully linked issue {source_issue_key} as 'Duplicate' to {target_issue_key}")
+    except Exception as e:
+        print(f"Error creating link: {e}")
+  
+
